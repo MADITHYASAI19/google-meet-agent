@@ -1,0 +1,109 @@
+import React from 'react';
+import { Card, Button, Badge } from '../ui/common';
+import { LuChevronLeft, LuChevronRight, LuFlag, LuRotateCcw } from 'react-icons/lu';
+
+export const QuizProgress = ({ total, current, answered, marked }) => (
+  <div className="flex flex-col gap-2 w-full">
+    <div className="flex justify-between text-xs font-medium text-gray-500 dark:text-gray-400">
+      <span>Question {current + 1} of {total}</span>
+      <span>{Math.round((answered / total) * 100)}% Completed</span>
+    </div>
+    <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden flex">
+      <div
+        className="h-full bg-primary-600 transition-all duration-300"
+        style={{ width: `${(answered / total) * 100}%` }}
+      />
+    </div>
+  </C>
+);
+
+export const QuestionCard = ({ question, onAnswer, currentAnswer, isMarked, onToggleMark }) => {
+  const { type, text, options, correct_answer } = question;
+
+  const renderInput = () => {
+    switch (type) {
+      case 'mcq':
+        return (
+          <div className="grid grid-cols-1 gap-3 mt-4">
+            {options.map((opt, i) => (
+              <button
+                key={i}
+                onClick={() => onAnswer(opt)}
+                className={`p-4 text-left rounded-xl border transition-all ${
+                  currentAnswer === opt
+                    ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20 ring-1 ring-primary-600'
+                    : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                }`}
+              >
+                <span className="font-medium dark:text-white">{opt}</span>
+              </button>
+            ))}
+          </div>
+        );
+      case 'true_false':
+        return (
+          <div className="flex gap-4 mt-4">
+            {['True', 'False'].map(opt => (
+              <button
+                key={opt}
+                onClick={() => onAnswer(opt)}
+                className={`flex-1 p-4 rounded-xl border transition-all ${
+                  currentAnswer === opt
+                    ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20 ring-1 ring-primary-600'
+                    : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                }`}
+              >
+                <span className="font-medium dark:text-white">{opt}</span>
+              </button>
+            ))}
+          </div>
+        );
+      case 'fill_blank':
+        return (
+          <div className="mt-4">
+            <input
+              type="text"
+              value={currentAnswer || ''}
+              onChange={(e) => onAnswer(e.target.value)}
+              placeholder="Type your answer..."
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-card dark:text-white outline-none focus:ring-2 focus:ring-primary-500"
+            />
+          </div>
+        );
+      case 'subjective':
+        return (
+          <div className="mt-4">
+            <textarea
+              rows={4}
+              value={currentAnswer || ''}
+              onChange={(e) => onAnswer(e.target.value)}
+              placeholder="Write your detailed answer here..."
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-card dark:text-white outline-none focus:ring-2 focus:ring-primary-500"
+            />
+          </div>
+        );
+      default:
+        return <p className="text-red-500 mt-4">Unsupported question type: {type}</p>;
+    }
+  };
+
+  return (
+    <Card className="relative">
+      <div className="flex justify-between items-start mb-6">
+        <Badge color="secondary">{type.replace('_', ' ').toUpperCase()}</Badge>
+        <button
+          onClick={onToggleMark}
+          className={`p-2 rounded-full transition-colors ${isMarked ? 'text-orange-500 bg-orange-50 dark:bg-orange-900/20' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+        >
+          <LuFlag />
+        </button>
+      </div>
+      <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-6 leading-relaxed">
+        {text}
+      </h3>
+      {renderInput()}
+    </Card>
+  );
+};
+
+export { QuizProgress, QuestionCard };

@@ -1,0 +1,8 @@
+{
+  "total_participants": 1,
+  "average_attendance_duration_seconds": 3600.0,
+  "peak_participants": 1,
+  "meeting_duration_seconds": 3600.0,
+  "earliest_join": "2023-10-01T10:00:00",
+  "latest_leave": "2023-10-01T11:00:00"
+}

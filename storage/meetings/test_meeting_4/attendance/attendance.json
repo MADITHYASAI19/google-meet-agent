@@ -1,0 +1,12 @@
+{
+  "user_4": {
+    "participant_id": "user_4",
+    "display_name": "Charlie",
+    "email": "Unknown",
+    "first_seen": "2023-10-01T10:00:00",
+    "last_seen": "2023-10-01T11:00:00",
+    "total_duration_seconds": 3600.0,
+    "status": "left",
+    "join_count": 1
+  }
+}

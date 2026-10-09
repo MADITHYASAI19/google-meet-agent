@@ -1,0 +1,283 @@
+import logging
+import json
+import asyncio
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+from backend.app.core.event_dispatcher import dispatcher
+from backend.app.events.meeting_events import (
+    AssignmentGenerationCompleted, StudyPackGenerationStarted, StudyPackGenerationProgress,
+    StudyPackGenerationCompleted, StudyPackGenerationFailed
+)
+from backend.app.services.storage_service import storage_manager
+from backend.app.config.settings import settings
+
+logger = logging.getLogger("ai_lecture_assistant")
+
+class StudyPackService:
+    """
+    AI Study Pack Generator Service.
+    Consolidates all AI-generated artifacts into a single unified study package.
+    """
+
+    def __init__(self):
+        self.settings = settings.study_pack
+
+    async def handle_assignment_completed(self, event: AssignmentGenerationCompleted):
+        """
+        Triggered by AssignmentGenerationCompleted event to start the study pack consolidation.
+        """
+        meeting_id = event.meeting_id
+
+        logger.info(f"Starting study pack generation for meeting: {meeting_id}")
+        await dispatcher.publish(StudyPackGenerationStarted(meeting_id=meeting_id))
+
+        try:
+            # Stage 2: Load & Validate Artifacts
+            await dispatcher.publish(StudyPackGenerationProgress(
+                meeting_id=meeting_id, stage="Loading Artifacts", progress_percentage=20.0
+            ))
+            artifacts = await self._load_all_artifacts(meeting_id)
+
+            # Stage 3: Build Internal Model
+            # (The 'artifacts' dict already serves as our internal model)
+
+            # Stage 4-6: Generate README, Manifest, and Index
+            await dispatcher.publish(StudyPackGenerationProgress(
+                meeting_id=meeting_id, stage="Generating Package Files", progress_percentage=50.0
+            ))
+
+            # Stage 7-8: Generate Stats and Metadata
+            stats = self._generate_statistics(artifacts)
+            metadata = self._generate_metadata(meeting_id)
+
+            # Stage 9: Persist Package
+            package_path = await self._save_study_pack(meeting_id, artifacts, stats, metadata)
+
+            logger.info(f"Study pack generation completed successfully for meeting: {meeting_id}")
+            await dispatcher.publish(StudyPackGenerationCompleted(
+                meeting_id=meeting_id,
+                study_pack_package_path=str(package_path)
+            ))
+
+        except Exception as e:
+            logger.error(f"Study pack generation failed for meeting {meeting_id}: {str(e)}")
+            await dispatcher.publish(StudyPackGenerationFailed(
+                meeting_id=meeting_id,
+                error_message=str(e)
+            ))
+
+    # --- Pipeline Stage Helpers ---
+
+    async def _load_all_artifacts(self, meeting_id: str) -> Dict[str, Any]:
+        """
+        Gathers all required artifacts from their respective meeting sub-folders.
+        Returns a map of artifact_name -> file_path.
+        """
+        meeting_dir = storage_manager.get_meeting_folder(meeting_id)
+
+        # Mapping of required artifacts to their relative paths from meeting_dir
+        required_artifacts = {
+            "notes": "notes/notes.json",
+            "quiz": "quiz/quiz.json", # Using the structured JSON for manifest/stats
+            "flashcards": "flashcards/flashcards.json",
+            "assignment": "assignment/assignment.json",
+            "transcript": "transcripts/transcript.json", # Adjust based on actual transcript path
+            "attendance": "attendance/attendance.json"
+        }
+
+        artifacts = {}
+        for name, rel_path in required_artifacts.items():
+            # Check settings to see if this artifact should be included
+            include_flag = getattr(self.settings, f"include_{name}", True)
+            if not include_flag:
+                continue
+
+            path = meeting_dir / rel_path
+            if not path.exists():
+                raise FileNotFoundError(f"Required artifact {name} missing at {path}")
+
+            # Validate JSON content
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    json.load(f)
+            except json.JSONDecodeError:
+                raise ValueError(f"Artifact {name} at {path} contains invalid JSON.")
+
+            artifacts[name] = path
+
+        return artifacts
+
+    def _generate_readme(self, meeting_id: str, artifacts: Dict[str, Path]) -> str:
+        """Generates a high-level README.md for the study pack."""
+        # In a real scenario, we'd extract the lecture title from notes.json
+        # For now, we use a generic title or try to load it from notes.json
+        title = "Lecture Study Pack"
+        try:
+            with open(artifacts["notes"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                title = data.get("title", title)
+        except Exception:
+            pass
+
+        md = f"# {title}\n\n"
+        md += f"**Meeting ID**: {meeting_id}\n"
+        md += f"**Generated At**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        md += "## Package Contents\n"
+        md += "This study pack contains a consolidated set of AI-generated materials to help you master the lecture content.\n\n"
+
+        for name, path in artifacts.items():
+            md += f"- **{name.title()}**: Located in `/{name}/`\n"
+
+        md += "\n## Quick Navigation\n"
+        md += "Use the `index.md` file to quickly jump to specific study materials.\n"
+
+        return md
+
+    def _generate_index(self, artifacts: Dict[str, Path]) -> str:
+        """Generates a navigation index.md."""
+        md = "# Lecture Study Pack Index\n\n"
+        md += "Click the links below to access the generated study materials:\n\n"
+
+        for name, path in artifacts.items():
+            # We link to the .md version if it exists, otherwise the .json
+            # Note: This assumes the .md files were generated by previous services
+            folder = path.parent.name
+            file_name = "notes.md" if folder == "notes" else \
+                        "quiz.md" if folder == "quiz" else \
+                        "flashcards.md" if folder == "flashcards" else \
+                        "assignment.md" if folder == "assignment" else \
+                        path.name
+
+            md += f"- [{name.title()}](./{folder}/{file_name})\n"
+
+        return md
+
+    def _generate_manifest(self, artifacts: Dict[str, Path]) -> Dict[str, Any]:
+        """Generates the master study_pack.json manifest."""
+        contents = {}
+        for name, path in artifacts.items():
+            # Map to the human-readable .md version for the manifest
+            folder = path.parent.name
+            file_name = "notes.md" if folder == "notes" else \
+                        "quiz.md" if folder == "quiz" else \
+                        "flashcards.md" if folder == "flashcards" else \
+                        "assignment.md" if folder == "assignment" else \
+                        path.name
+            contents[name] = f"{folder}/{file_name}"
+
+        return {
+            "meeting_id": "", # Will be filled in _save_study_pack
+            "lecture_title": "", # Will be filled in _save_study_pack
+            "generated_at": datetime.now().isoformat(),
+            "contents": contents
+        }
+
+    def _generate_statistics(self, artifacts: Dict[str, Path]) -> Dict[str, Any]:
+        """Aggregates statistics across all artifacts."""
+        stats = {
+            "total_words": 0,
+            "total_questions": 0,
+            "flashcard_count": 0,
+            "assignment_count": 0,
+            "participant_count": 0,
+            "transcript_duration": 0,
+            "generation_time": 0.0
+        }
+
+        # Extract from notes
+        try:
+            with open(artifacts["notes"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                stats["total_words"] += len(data.get("summary", "").split())
+        except Exception: pass
+
+        # Extract from quiz
+        try:
+            with open(artifacts["quiz"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                stats["total_questions"] += len(data.get("mcqs", [])) + \
+                                         len(data.get("true_false", [])) + \
+                                         len(data.get("fill_blanks", [])) + \
+                                         len(data.get("subjective", []))
+        except Exception: pass
+
+        # Extract from flashcards
+        try:
+            with open(artifacts["flashcards"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                stats["flashcard_count"] = len(data) if isinstance(data, list) else 0
+        except Exception: pass
+
+        # Extract from assignment
+        try:
+            with open(artifacts["assignment"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                stats["assignment_count"] = len(data.get("questions", []))
+        except Exception: pass
+
+        # Extract from attendance
+        try:
+            with open(artifacts["attendance"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                stats["participant_count"] = len(data) if isinstance(data, list) else 0
+        except Exception: pass
+
+        return stats
+
+    def _generate_metadata(self, meeting_id: str) -> Dict[str, Any]:
+        """Generates the package metadata."""
+        return {
+            "package_version": self.settings.version,
+            "generated_at": datetime.now().isoformat(),
+            "application_version": "1.0.0",
+            "meeting_id": meeting_id,
+            "lecture_title": "Lecture Study Pack",
+            "pipeline_version": "1.0"
+        }
+
+    async def _save_study_pack(self, meeting_id: str, artifacts: Dict[str, Path], stats: Dict[str, Any], metadata: Dict[str, Any]) -> Path:
+        """
+        Persists the study pack artifacts to the storage directory.
+        """
+        meeting_dir = storage_manager.get_meeting_folder(meeting_id)
+        study_pack_dir = meeting_dir / "study_pack"
+        study_pack_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. study_pack.json (Manifest)
+        manifest = self._generate_manifest(artifacts)
+        manifest["meeting_id"] = meeting_id
+        # Try to get title from notes
+        try:
+            with open(artifacts["notes"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                manifest["lecture_title"] = data.get("title", "Lecture Study Pack")
+        except Exception: pass
+
+        with open(study_pack_dir / "study_pack.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+
+        # 2. README.md
+        if self.settings.generate_readme:
+            readme = self._generate_readme(meeting_id, artifacts)
+            with open(study_pack_dir / "README.md", "w", encoding="utf-8") as f:
+                f.write(readme)
+
+        # 3. index.md
+        if self.settings.generate_index:
+            index = self._generate_index(artifacts)
+            with open(study_pack_dir / "index.md", "w", encoding="utf-8") as f:
+                f.write(index)
+
+        # 4. statistics.json
+        with open(study_pack_dir / "statistics.json", "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2)
+
+        # 5. metadata.json
+        with open(study_pack_dir / "metadata.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+        return study_pack_dir
+
+study_pack_service = StudyPackService()

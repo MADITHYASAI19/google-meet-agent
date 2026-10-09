@@ -1,0 +1,15 @@
+[
+  {
+    "timestamp": "2023-10-01T10:00:00",
+    "event": "JOIN",
+    "participant_id": "user_4",
+    "display_name": "Charlie"
+  },
+  {
+    "timestamp": "2023-10-01T11:00:00",
+    "event": "LEAVE",
+    "participant_id": "user_4",
+    "display_name": "Unknown",
+    "session_duration_seconds": 3600.0
+  }
+]

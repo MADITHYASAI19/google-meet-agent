@@ -1,0 +1,208 @@
+import logging
+import json
+import asyncio
+import time
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple
+
+from backend.app.core.event_dispatcher import dispatcher
+from backend.app.events.meeting_events import (
+    NotesGenerationCompleted, FlashcardGenerationStarted, FlashcardGenerationProgress,
+    FlashcardGenerationCompleted, FlashcardGenerationFailed
+)
+from backend.app.llm.router import llm_router
+from backend.app.llm.models import LLMRequest
+from backend.app.services.storage_service import storage_manager
+from backend.app.config.settings import settings
+
+logger = logging.getLogger("ai_lecture_assistant")
+
+class FlashcardService:
+    """
+    AI Flashcard Generator Service.
+    Transforms structured study notes into a high-impact flashcard deck using the LLMRouter.
+    """
+
+    def __init__(self):
+        self.settings = settings.flashcards
+
+    async def handle_notes_completed(self, event: NotesGenerationCompleted):
+        """
+        Triggered by NotesGenerationCompleted event to start the flashcard generation pipeline.
+        """
+        meeting_id = event.meeting_id
+        notes_package_path = event.notes_package_path
+
+        logger.info(f"Starting flashcard generation for meeting: {meeting_id}")
+        await dispatcher.publish(FlashcardGenerationStarted(meeting_id=meeting_id))
+
+        try:
+            # Stage 1 & 2: Load & Validate
+            notes_data = await self._load_notes(notes_package_path)
+
+            # Stage 3: Load Prompts
+            system_prompt = await self._load_prompt("flashcard_system_prompt.md")
+            user_prompt_template = await self._load_prompt("flashcard_user_prompt.md")
+
+            # Stage 4: Replace Placeholders
+            prompt = self._prepare_prompt(notes_data, user_prompt_template)
+
+            # Stage 5: Generate
+            await dispatcher.publish(FlashcardGenerationProgress(
+                meeting_id=meeting_id,
+                stage="Generating Flashcards",
+                progress_percentage=30.0
+            ))
+
+            result = await llm_router.generate(LLMRequest(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                temperature=self.settings.temperature,
+                max_tokens=self.settings.max_tokens
+            ))
+
+            # Stage 6 & 7: Validate & Normalize
+            await dispatcher.publish(FlashcardGenerationProgress(
+                meeting_id=meeting_id,
+                stage="Validating and Normalizing",
+                progress_percentage=60.0
+            ))
+            flashcards_data = self._validate_and_normalize(result.text)
+
+            # Stage 8, 9, 10: Format & Save
+            package_path = await self._save_flashcard_package(meeting_id, flashcards_data, result)
+
+            logger.info(f"Flashcard generation completed successfully for meeting: {meeting_id}")
+            await dispatcher.publish(FlashcardGenerationCompleted(
+                meeting_id=meeting_id,
+                flashcard_package_path=str(package_path)
+            ))
+
+        except Exception as e:
+            logger.error(f"Flashcard generation failed for meeting {meeting_id}: {str(e)}")
+            await dispatcher.publish(FlashcardGenerationFailed(
+                meeting_id=meeting_id,
+                error_message=str(e)
+            ))
+
+    # --- Pipeline Stage Helpers ---
+
+    async def _load_notes(self, package_path: str) -> Dict[str, Any]:
+        """Loads notes.json from the provided package path."""
+        path = Path(package_path) / "notes.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Notes file not found at {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not data or not data.get("summary") and not data.get("key_concepts"):
+            raise ValueError("Notes content is empty or invalid.")
+
+        return data
+
+    async def _load_prompt(self, filename: str) -> str:
+        """Loads a prompt file from the prompts directory."""
+        path = Path("backend/app/prompts") / filename
+        if not path.exists():
+            raise FileNotFoundError(f"Prompt file not found: {path}")
+        return path.read_text(encoding="utf-8")
+
+    def _prepare_prompt(self, notes_data: Dict[str, Any], template: str) -> str:
+        """Injects metadata and notes into the user prompt template."""
+        notes_text = json.dumps(notes_data, indent=2)
+
+        prompt = template.replace("{{notes}}", notes_text)
+        prompt = prompt.replace("{{difficulty}}", self.settings.difficulty)
+        prompt = prompt.replace("{{flashcard_count}}", str(self.settings.flashcard_count))
+
+        title = notes_data.get("title", "Lecture")
+        prompt = prompt.replace("{{lecture_title}}", title)
+
+        return prompt
+
+    def _validate_and_normalize(self, raw_text: str) -> List[Dict[str, Any]]:
+        """
+        Extracts JSON from LLM response and ensures it matches the flashcard schema.
+        """
+        if "```json" in raw_text:
+            raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw_text:
+            raw_text = raw_text.split("```")[1].split("```")[0].strip()
+
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LLM returned malformed JSON: {str(e)}")
+
+        # Handle case where LLM returns a dict with a "flashcards" key or just the list
+        cards = data.get("flashcards", data) if isinstance(data, dict) else data
+
+        if not isinstance(cards, list):
+            raise ValueError("LLM response does not contain a list of flashcards.")
+
+        # Normalization: ensure all required fields are present
+        normalized_cards = []
+        for card in cards:
+            if all(k in card for k in ("front", "back")):
+                normalized_cards.append(card)
+
+        return normalized_cards
+
+    async def _save_flashcard_package(self, meeting_id: str, cards: List[Dict[str, Any]], llm_response: Any) -> Path:
+        """
+        Saves the flashcard artifacts into the storage directory.
+        """
+        meeting_dir = storage_manager.get_meeting_folder(meeting_id)
+        flashcard_dir = meeting_dir / "flashcards"
+        flashcard_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. flashcards.json
+        with open(flashcard_dir / "flashcards.json", "w", encoding="utf-8") as f:
+            json.dump(cards, f, indent=2)
+
+        # 2. flashcards.md
+        md_content = f"# Flashcards\n\n"
+        for i, card in enumerate(cards, 1):
+            md_content += f"## Card {i}\n\n"
+            md_content += f"**Front**: {card.get('front', 'N/A')}\n\n"
+            md_content += f"**Back**: {card.get('back', 'N/A')}\n\n"
+            md_content += f"**Difficulty**: {card.get('difficulty', 'N/A')} | **Category**: {card.get('category', 'N/A')}\n"
+            md_content += "---\n\n"
+
+        with open(flashcard_dir / "flashcards.md", "w", encoding="utf-8") as f:
+            f.write(md_content)
+
+        # 3. metadata.json
+        metadata = {
+            "meeting_id": meeting_id,
+            "generation_time": datetime.now().isoformat(),
+            "provider": llm_response.provider,
+            "model": llm_response.model,
+            "token_usage": llm_response.usage.total_tokens,
+            "prompt_version": self.settings.prompt_version
+        }
+        with open(flashcard_dir / "metadata.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+        # 4. statistics.json
+        difficulty_dist = {}
+        for card in cards:
+            diff = card.get("difficulty", "unknown")
+            difficulty_dist[diff] = difficulty_dist.get(diff, 0) + 1
+
+        total_len = sum(len(card.get("back", "")) for card in cards)
+        avg_len = total_len / len(cards) if cards else 0
+
+        stats = {
+            "total_flashcards": len(cards),
+            "difficulty_distribution": difficulty_dist,
+            "average_answer_length": avg_len
+        }
+        with open(flashcard_dir / "statistics.json", "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2)
+
+        return flashcard_dir
+
+flashcard_service = FlashcardService()

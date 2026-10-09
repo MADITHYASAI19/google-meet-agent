@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: lecture_assistant_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - assistant_net
+
+  db:
+    image: postgres:15-alpine
+    container_name: lecture_assistant_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-lecture_assistant}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-user} -d ${DB_NAME:-lecture_assistant}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - assistant_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: lecture_assistant_redis
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - assistant_net
+
+networks:
+  assistant_net:
+    driver: bridge
+
+volumes:
+  postgres_data:

@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --transition-speed: 0.3s;
+}
+
+body {
+  @apply transition-colors duration-200;
+}
+
+.glass-card {
+  @apply bg-white/80 dark:bg-dark-card/80 backdrop-blur-md border border-gray-200 dark:border-gray-700 shadow-sm;
+}
