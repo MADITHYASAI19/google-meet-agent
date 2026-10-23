@@ -41,6 +41,16 @@ const LoginPage = () => {
           <Button type="submit" className="w-full flex items-center justify-center gap-2">
             Sign In <LuArrowRight />
           </Button>
+          <Button type="button" className="w-full flex items-center justify-center gap-2 mt-2 bg-gray-200 dark:bg-gray-700" onClick={async () => {
+            try {
+              await login('testuser123@example.com', 'password123');
+              navigate('/dashboard');
+            } catch (e) {
+              alert('Temp login failed');
+            }
+          }}>
+            Temp Login
+          </Button>
         </form>
 
         <p className="mt-6 text-sm text-gray-500 dark:text-gray-400">

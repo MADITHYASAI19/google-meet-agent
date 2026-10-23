@@ -1,5 +1,5 @@
 from typing import Generator
-from AI_Lecture_Assistant.backend.app.database.database import SessionLocal
+from backend.app.database.database import SessionLocal
 
 def get_db() -> Generator:
     """

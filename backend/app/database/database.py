@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from AI_Lecture_Assistant.backend.app.config.settings import settings
+from backend.app.config.settings import settings
 
 # Create the SQLAlchemy engine
 engine = create_engine(

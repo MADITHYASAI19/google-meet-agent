@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Tuple, Any
@@ -30,19 +30,42 @@ async def register(
     except UserAlreadyExists as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
+from pydantic import BaseModel
+from typing import Optional
+
+class LoginRequest(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    password: str
+
 @router.post("/login", response_model=APIResponse[dict], tags=["Auth"])
 async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
-    """Authenticates user and returns JWT token pair."""
+    """Authenticates user and returns JWT token pair (supports JSON and form-data)."""
+    username = None
+    password = None
+
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        body = await request.json()
+        username = body.get("username") or body.get("email")
+        password = body.get("password")
+    else:
+        form = await request.form()
+        username = form.get("username") or form.get("email")
+        password = form.get("password")
+
+    if not username or not password:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Username/email and password required")
+
     auth_service = AuthService(db)
     try:
-        # We pass mock request info for now (IP/UA)
         access_token, refresh_token = await auth_service.login(
-            email=form_data.username,
-            password=form_data.password,
-            request_info={"ip": "unknown", "user_agent": "unknown"}
+            email=username,
+            password=password,
+            request_info={"ip": request.client.host if request.client else "unknown", "user_agent": request.headers.get("user-agent", "unknown")}
         )
         return APIResponse(
             data={"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"},

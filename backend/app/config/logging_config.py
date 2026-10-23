@@ -2,7 +2,7 @@ import logging
 import sys
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from AI_Lecture_Assistant.backend.app.config.settings import settings
+from backend.app.config.settings import settings
 
 def setup_logging():
     """
